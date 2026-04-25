@@ -31,6 +31,47 @@ app.get('/api/meta/test-connection', async (req, res) => {
   }
 });
 
+app.get('/api/meta/lead-forms', async (req, res) => {
+  try {
+    const forms = await metaApi.getLeadForms();
+    res.json(forms);
+  } catch (error) {
+    console.error('Lead Forms Route Error:', error.response?.data?.error?.message || error.message);
+    res.status(500).json({ 
+      error: 'Failed to fetch Lead Forms', 
+      details: error.response?.data || error.message 
+    });
+  }
+});
+
+app.post('/api/meta/lead-forms/create', async (req, res) => {
+  console.log('📝 Creating new Lead Form:', req.body.name);
+  const { name = `Contact Form - ${new Date().toISOString().replace('T', ' ').slice(0, 19)}` } = req.body;
+  try {
+    const newForm = await metaApi.createLeadForm(name);
+    res.json(newForm);
+  } catch (error) {
+    console.error('Lead Form Create Route Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to create Lead Form', 
+      details: error.response?.data?.error?.error_user_msg || error.response?.data?.error?.message || error.message 
+    });
+  }
+});
+
+app.get('/api/meta/lead-forms/:id/leads', async (req, res) => {
+  try {
+    const leads = await metaApi.getFormLeads(req.params.id);
+    res.json(leads);
+  } catch (error) {
+    console.error('Fetch Leads Route Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch Leads', 
+      details: error.response?.data?.error?.message || error.message 
+    });
+  }
+});
+
 // Multer – store to disk using original extension
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
@@ -84,16 +125,17 @@ app.get('/api/campaigns', (req, res) => {
 
 app.post('/api/campaigns', (req, res) => {
   console.log('Incoming Campaign Draft Payload:', req.body);
-  const { name, target_audience, target_cities, target_keywords, budget } = req.body;
+  const { name, target_audience, target_cities, target_keywords, budget, objective, lead_gen_form_id } = req.body;
   const citiesJson = JSON.stringify(target_cities || []);
   const keywordsJson = JSON.stringify(target_keywords || []);
+  const finalObjective = objective || 'OUTCOME_TRAFFIC';
 
   const query = `
-    INSERT INTO campaigns (name, target_audience, target_cities, target_keywords, budget, status)
-    VALUES (?, ?, ?, ?, ?, 'draft')
+    INSERT INTO campaigns (name, target_audience, target_cities, target_keywords, budget, objective, lead_gen_form_id, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
   `;
   
-  db.run(query, [name, target_audience, citiesJson, keywordsJson, budget], function(err) {
+  db.run(query, [name, target_audience, citiesJson, keywordsJson, budget, finalObjective, lead_gen_form_id || null], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ id: this.lastID, message: `Campaign draft "${name}" saved.` });
   });
@@ -129,7 +171,7 @@ app.put('/api/campaigns/:id/publish', async (req, res) => {
     console.log(`🚀 Starting Meta publication for: ${campaign.name}`);
     
     // A. Create Campaign
-    const metaCampaign = await metaApi.createCampaign(campaign.name);
+    const metaCampaign = await metaApi.createCampaign(campaign.name, campaign.objective);
     const campaignId = metaCampaign.id;
 
     // B. Create Ad Set (Targeting)
@@ -144,7 +186,7 @@ app.put('/api/campaigns/:id/publish', async (req, res) => {
 
     let metaAdSet;
     try {
-      metaAdSet = await metaApi.createAdSet(campaignId, campaign.name, campaign.budget || 500, targetingSpec);
+      metaAdSet = await metaApi.createAdSet(campaignId, campaign.name, campaign.budget || 500, targetingSpec, campaign.objective);
     } catch (adSetError) {
       const errorData = adSetError.response?.data?.error;
       const subcode = errorData?.error_subcode;
@@ -173,7 +215,7 @@ app.put('/api/campaigns/:id/publish', async (req, res) => {
             );
 
             console.log('🚀 Retrying publication with healed targeting...');
-            metaAdSet = await metaApi.createAdSet(campaignId, campaign.name, campaign.budget || 500, targetingSpec);
+            metaAdSet = await metaApi.createAdSet(campaignId, campaign.name, campaign.budget || 500, targetingSpec, campaign.objective);
           } else {
             throw adSetError; // Couldn't find specific IDs to swap
           }
@@ -213,7 +255,8 @@ app.put('/api/campaigns/:id/publish', async (req, res) => {
       const metaCreative = await metaApi.createCarouselCreative(
         creative.ad_name || `Carousel - ${campaign.name}`,
         campaign.name, // Use campaign name as the primary message
-        slidesWithHashes
+        slidesWithHashes,
+        campaign.lead_gen_form_id
       );
       creativeId = metaCreative.id;
     } else {
@@ -226,7 +269,8 @@ app.put('/api/campaigns/:id/publish', async (req, res) => {
         creative.headline, 
         creative.ad_copy, 
         imageHash,
-        creative.description
+        creative.description,
+        campaign.lead_gen_form_id
       );
       creativeId = metaCreative.id;
     }
@@ -277,7 +321,16 @@ app.put('/api/campaigns/:id/stop', async (req, res) => {
 
     if (campaign && campaign.meta_campaign_id) {
       console.log(`⏸ Pausing Meta Campaign: ${campaign.meta_campaign_id}`);
-      await metaApi.updateCampaignStatus(campaign.meta_campaign_id, 'PAUSED');
+      try {
+        await metaApi.updateCampaignStatus(campaign.meta_campaign_id, 'PAUSED');
+      } catch (metaError) {
+        const errorMsg = metaError.response?.data?.error?.message || '';
+        if (errorMsg.includes('deleted')) {
+          console.warn(`⚠️ Meta Campaign ${campaign.meta_campaign_id} was already deleted on Meta. Updating local status to stopped.`);
+        } else {
+          throw metaError;
+        }
+      }
     }
 
     // 2. Update local database status
@@ -294,7 +347,7 @@ app.put('/api/campaigns/:id/stop', async (req, res) => {
 
 app.delete('/api/campaigns/:id', (req, res) => {
   const { id } = req.params;
-  const query = `DELETE FROM campaigns WHERE id = ? AND status = 'draft'`;
+  const query = `DELETE FROM campaigns WHERE id = ?`;
   db.run(query, [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ message: 'Draft deleted.' });

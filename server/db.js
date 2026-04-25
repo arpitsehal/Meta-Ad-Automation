@@ -45,6 +45,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
       // Add target_cities column if upgrading existing DB
       db.run(`ALTER TABLE campaigns ADD COLUMN target_cities TEXT DEFAULT '[]'`, () => {});
       db.run(`ALTER TABLE campaigns ADD COLUMN target_keywords TEXT DEFAULT '[]'`, () => {});
+      db.run(`ALTER TABLE campaigns ADD COLUMN objective TEXT DEFAULT 'OUTCOME_TRAFFIC'`, () => {});
+      db.run(`ALTER TABLE campaigns ADD COLUMN lead_gen_form_id TEXT DEFAULT NULL`, () => {});
 
       // Mock Analytics Data (For MVP viewing purposes)
       db.run(`CREATE TABLE IF NOT EXISTS analytics (

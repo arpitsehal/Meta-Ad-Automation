@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { Activity, LayoutDashboard, Megaphone, Settings, Search, Bell, Palette, LogOut } from 'lucide-react';
+import { Activity, LayoutDashboard, Megaphone, Settings, Search, Bell, Palette, LogOut, Users } from 'lucide-react';
 import './Layout.css';
 
 const Layout = ({ setAuth }) => {
@@ -39,6 +39,12 @@ const Layout = ({ setAuth }) => {
               <NavLink to="/creative" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
                 <Palette size={20} />
                 Creative Studio
+              </NavLink>
+            </li>
+            <li>
+              <NavLink to="/leads" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                <Users size={20} />
+                Incoming Leads
               </NavLink>
             </li>
             <li>

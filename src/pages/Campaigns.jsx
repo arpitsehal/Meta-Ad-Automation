@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Rocket, MapPin, X } from 'lucide-react';
+import { Rocket, MapPin, X, ChevronDown, ChevronRight, Building2, Layers } from 'lucide-react';
 import './Campaigns.css';
+import { INDIA_STATES_DATA } from '../data/indiaLocations';
 
 // ── Indian districts organised by pharmaceutical demand profile ────────────────
 const DISTRICT_GROUPS = [
@@ -54,7 +55,11 @@ const Campaigns = () => {
     name: '',
     target_audience: 'doctors',
     budget: '',
+    objective: 'OUTCOME_TRAFFIC',
+    lead_gen_form_id: ''
   });
+  const [leadForms, setLeadForms] = useState([]);
+  const [loadingForms, setLoadingForms] = useState(false);
   const [selectedDistricts, setSelectedDistricts] = useState([]);
   const [districtSearch, setDistrictSearch] = useState('');
   
@@ -66,6 +71,8 @@ const Campaigns = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [publishingId, setPublishingId] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState('Tier 1 – Ultra High Pharma Demand (Metros)');
+  const [targetingMode, setTargetingMode] = useState('tiers'); // 'tiers' or 'branches'
+  const [expandedState, setExpandedState] = useState(null);
 
   const loadCampaigns = () =>
     fetch('http://localhost:3001/api/campaigns')
@@ -73,7 +80,26 @@ const Campaigns = () => {
       .then(data => setCampaignsList(data))
       .catch(err => console.error(err));
 
-  useEffect(() => { loadCampaigns(); }, []);
+  const loadLeadForms = () => {
+    setLoadingForms(true);
+    fetch('http://localhost:3001/api/meta/lead-forms')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setLeadForms(data);
+          if (data.length > 0 && !campaignData.lead_gen_form_id) {
+            setCampaignData(prev => ({ ...prev, lead_gen_form_id: data[0].id }));
+          }
+        }
+      })
+      .catch(err => console.error(err))
+      .finally(() => setLoadingForms(false));
+  };
+
+  useEffect(() => { 
+    loadCampaigns(); 
+    loadLeadForms();
+  }, []);
 
   // ── Auto-suggestion logic ──────────────────────────────────
   const getAutoSuggestions = () => {
@@ -101,12 +127,27 @@ const Campaigns = () => {
   const clearDistricts = () => setSelectedDistricts([]);
   const selectAll = () => setSelectedDistricts([...ALL_DISTRICTS]);
 
+  const selectStateDistricts = (districts) => {
+    setSelectedDistricts(prev => {
+      const allIn = districts.every(c => prev.includes(c));
+      if (allIn) return prev.filter(c => !districts.includes(c));
+      return [...new Set([...prev, ...districts])];
+    });
+  };
+
   const filteredGroups = DISTRICT_GROUPS.map(g => ({
     ...g,
     districts: districtSearch
       ? g.districts.filter(c => c.toLowerCase().includes(districtSearch.toLowerCase()))
       : g.districts,
   })).filter(g => g.districts.length > 0);
+
+  const filteredStates = INDIA_STATES_DATA.map(s => ({
+    ...s,
+    districts: districtSearch
+      ? s.districts.filter(c => c.toLowerCase().includes(districtSearch.toLowerCase()))
+      : s.districts,
+  })).filter(s => s.districts.length > 0);
 
   // ── Keyword helpers ───────────────────────────────────────
   const addKeyword = (kw) => {
@@ -128,6 +169,9 @@ const Campaigns = () => {
   const handleLaunch = async () => {
     if (selectedDistricts.length === 0) {
       return setStatusMsg('⚠️ Please select at least one target district.');
+    }
+    if (campaignData.objective === 'OUTCOME_LEADS' && !campaignData.lead_gen_form_id) {
+      return setStatusMsg('⚠️ Please select a Lead Form for Lead Generation ads.');
     }
 
     // Auto-add any pending text in the keyword input box
@@ -194,6 +238,28 @@ const Campaigns = () => {
     } catch { setStatusMsg('Failed to delete.'); }
   };
 
+  const handleCreateLeadForm = async () => {
+    setStatusMsg('Creating Lead Form...');
+    try {
+      const response = await fetch('http://localhost:3001/api/meta/lead-forms/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `Contact Form - ${new Date().toISOString().replace('T', ' ').slice(0, 19)}` }),
+      });
+      const data = await response.json();
+      if (data.id) {
+        setStatusMsg('Lead Form created successfully!');
+        setCampaignData(prev => ({ ...prev, lead_gen_form_id: data.id }));
+        loadLeadForms(); // Refresh the list
+      } else {
+        setStatusMsg(data.error || 'Failed to create form.');
+      }
+    } catch (err) {
+      setStatusMsg('Failed to connect to backend.');
+    }
+    setTimeout(() => setStatusMsg(''), 4000);
+  };
+
   // ── Render ───────────────────────────────────────────────
   return (
     <div className="campaigns-container animate-fade-in">
@@ -234,6 +300,74 @@ const Campaigns = () => {
               <option value="all">All</option>
             </select>
           </div>
+
+          {/* Objective */}
+          <div className="form-group">
+            <label>Campaign Objective</label>
+            <select
+              value={campaignData.objective}
+              onChange={e => setCampaignData({ ...campaignData, objective: e.target.value })}
+            >
+              <option value="OUTCOME_TRAFFIC">Website Traffic</option>
+              <option value="OUTCOME_LEADS">Lead Generation (In-App Form)</option>
+            </select>
+          </div>
+
+          {/* Lead Form Selection (Conditional) */}
+          {campaignData.objective === 'OUTCOME_LEADS' && (
+            <div className="form-group">
+              <label>Select Lead Form</label>
+              {loadingForms ? (
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Loading forms...</span>
+              ) : leadForms.length > 0 ? (
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <select
+                    value={campaignData.lead_gen_form_id}
+                    onChange={e => setCampaignData({ ...campaignData, lead_gen_form_id: e.target.value })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="" disabled>Select a form</option>
+                    {leadForms.map(form => (
+                      <option key={form.id} value={form.id}>{form.name}</option>
+                    ))}
+                  </select>
+                  <button 
+                    className="btn btn-primary" 
+                    onClick={handleCreateLeadForm}
+                    title="Create a new form with the latest custom questions"
+                    style={{ padding: '0.65rem 0.75rem', fontSize: '0.75rem' }}
+                  >
+                    + Create New
+                  </button>
+                </div>
+              ) : (
+                <div style={{ background: 'var(--danger-faded)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--danger)' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: '0.75rem', display: 'block', fontWeight: 500 }}>
+                    No active forms found on your Meta Page.
+                  </span>
+                  
+                  <button 
+                    className="btn btn-primary" 
+                    onClick={handleCreateLeadForm}
+                    style={{ marginBottom: '1rem', width: '100%' }}
+                  >
+                    Auto-Create Standard Form
+                  </button>
+                  
+                  <div style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    — OR —
+                  </div>
+                  
+                  <input
+                    type="text"
+                    placeholder="Enter Meta Lead Form ID manually"
+                    value={campaignData.lead_gen_form_id}
+                    onChange={e => setCampaignData({ ...campaignData, lead_gen_form_id: e.target.value })}
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Budget */}
           <div className="form-group">
@@ -280,54 +414,115 @@ const Campaigns = () => {
             </div>
           </div>
 
+          {/* Target Mode Toggle */}
+          <div className="targeting-mode-selector">
+            <button 
+              className={`mode-btn ${targetingMode === 'tiers' ? 'mode-btn--active' : ''}`}
+              onClick={() => setTargetingMode('tiers')}
+            >
+              <Layers size={14} /> Pharma Tiers
+            </button>
+            <button 
+              className={`mode-btn ${targetingMode === 'branches' ? 'mode-btn--active' : ''}`}
+              onClick={() => setTargetingMode('branches')}
+            >
+              <Building2 size={14} /> State-Wise (Branches)
+            </button>
+          </div>
+
           {/* Search + bulk actions */}
           <div className="city-toolbar">
             <input
               type="text"
-              placeholder="🔍 Search district..."
+              placeholder={`🔍 Search ${targetingMode === 'tiers' ? 'district' : 'state or district'}...`}
               value={districtSearch}
               onChange={e => setDistrictSearch(e.target.value)}
               className="city-search"
             />
-            <button className="btn" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }} onClick={selectAll}>Select All</button>
+            {targetingMode === 'tiers' && (
+              <button className="btn" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }} onClick={selectAll}>Select All</button>
+            )}
             <button className="btn" style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: 'var(--danger)', color: 'var(--danger)' }} onClick={clearDistricts}>Clear</button>
           </div>
 
           {/* Accordion groups */}
           <div className="city-accordion">
-            {filteredGroups.map(group => {
-              const allSelected = group.districts.every(c => selectedDistricts.includes(c));
-              const someSelected = group.districts.some(c => selectedDistricts.includes(c));
-              const open = expandedGroup === group.group || districtSearch.length > 0;
-              return (
-                <div key={group.group} className="accordion-group">
-                  <button
-                    className={`accordion-header ${someSelected ? 'accordion-header--active' : ''}`}
-                    onClick={() => setExpandedGroup(open && !districtSearch ? null : group.group)}
-                  >
-                    <span>{group.group} ({group.districts.length})</span>
-                    <label className="check-all-label" onClick={e => { e.stopPropagation(); selectGroup(group.districts); }}>
-                      <input type="checkbox" readOnly checked={allSelected} style={{ marginRight: '0.3rem' }} />
-                      Select all
-                    </label>
-                  </button>
-                  {open && (
-                    <div className="accordion-body">
-                      {group.districts.map(district => (
-                        <label key={district} className={`city-option ${selectedDistricts.includes(district) ? 'city-option--selected' : ''}`}>
-                          <input
-                            type="checkbox"
-                            checked={selectedDistricts.includes(district)}
-                            onChange={() => toggleDistrict(district)}
-                          />
-                          {district}
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {targetingMode === 'tiers' ? (
+              filteredGroups.map(group => {
+                const allSelected = group.districts.every(c => selectedDistricts.includes(c));
+                const someSelected = group.districts.some(c => selectedDistricts.includes(c));
+                const open = expandedGroup === group.group || districtSearch.length > 0;
+                return (
+                  <div key={group.group} className="accordion-group">
+                    <button
+                      className={`accordion-header ${someSelected ? 'accordion-header--active' : ''}`}
+                      onClick={() => setExpandedGroup(open && !districtSearch ? null : group.group)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        <span>{group.group} ({group.districts.length})</span>
+                      </div>
+                      <label className="check-all-label" onClick={e => { e.stopPropagation(); selectGroup(group.districts); }}>
+                        <input type="checkbox" readOnly checked={allSelected} style={{ marginRight: '0.3rem' }} />
+                        Select all
+                      </label>
+                    </button>
+                    {open && (
+                      <div className="accordion-body">
+                        {group.districts.map(district => (
+                          <label key={district} className={`city-option ${selectedDistricts.includes(district) ? 'city-option--selected' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={selectedDistricts.includes(district)}
+                              onChange={() => toggleDistrict(district)}
+                            />
+                            {district}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            ) : (
+              filteredStates.map(stateData => {
+                const allSelected = stateData.districts.every(c => selectedDistricts.includes(c));
+                const someSelected = stateData.districts.some(c => selectedDistricts.includes(c));
+                const open = expandedState === stateData.state || districtSearch.length > 0;
+                return (
+                  <div key={stateData.state} className="accordion-group branch-group">
+                    <button
+                      className={`accordion-header ${someSelected ? 'accordion-header--active' : ''}`}
+                      onClick={() => setExpandedState(open && !districtSearch ? null : stateData.state)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        <span style={{ fontWeight: 600 }}>{stateData.state}</span>
+                        <span style={{ fontSize: '0.75rem', opacity: 0.7 }}>({stateData.districts.length} districts)</span>
+                      </div>
+                      <label className="check-all-label" onClick={e => { e.stopPropagation(); selectStateDistricts(stateData.districts); }}>
+                        <input type="checkbox" readOnly checked={allSelected} style={{ marginRight: '0.3rem' }} />
+                        Select all
+                      </label>
+                    </button>
+                    {open && (
+                      <div className="accordion-body">
+                        {stateData.districts.map(district => (
+                          <label key={district} className={`city-option ${selectedDistricts.includes(district) ? 'city-option--selected' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={selectedDistricts.includes(district)}
+                              onChange={() => toggleDistrict(district)}
+                            />
+                            {district}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
 
           <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>

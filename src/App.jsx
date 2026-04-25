@@ -4,6 +4,7 @@ import Layout from './components/Layout'
 import Overview from './pages/Overview'
 import Campaigns from './pages/Campaigns'
 import Creative from './pages/Creative'
+import Leads from './pages/Leads'
 import Settings from './pages/Settings'
 import Login from './pages/Login'
 
@@ -33,6 +34,7 @@ function App() {
           <Route index element={<Overview />} />
           <Route path="campaigns" element={<Campaigns />} />
           <Route path="creative" element={<Creative />} />
+          <Route path="leads" element={<Leads />} />
           <Route path="settings" element={<Settings />} />
         </Route>
 

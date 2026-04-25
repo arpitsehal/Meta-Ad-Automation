@@ -43,18 +43,120 @@ class MetaApi {
     }
   }
 
+  async getPageAccessToken(creds) {
+    if (!creds.meta_page_id) throw new Error('Meta Page ID not configured.');
+    try {
+      const response = await axios.get(`${this.baseUrl}/${creds.meta_page_id}`, {
+        params: {
+          fields: 'access_token',
+          access_token: creds.meta_access_token
+        }
+      });
+      return response.data.access_token || creds.meta_access_token;
+    } catch (error) {
+      console.warn('⚠️ Could not fetch explicit Page Access Token. Using default token.', error.response?.data?.error?.message || error.message);
+      return creds.meta_access_token;
+    }
+  }
+
+  /**
+   * Get Lead Generation Forms for the Page
+   */
+  async getLeadForms() {
+    const creds = await this.getCredentials();
+    const pageId = creds.meta_page_id;
+    
+    if (!pageId) throw new Error('Meta Page ID not configured.');
+
+    const pageToken = await this.getPageAccessToken(creds);
+
+    try {
+      const response = await axios.get(`${this.baseUrl}/${pageId}/leadgen_forms`, {
+        params: {
+          fields: 'id,name,status',
+          access_token: pageToken
+        }
+      });
+      // Filter out inactive forms
+      return response.data.data.filter(form => form.status === 'ACTIVE');
+    } catch (error) {
+      console.error('Meta Lead Forms Error:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new Lead Generation Form on the Page
+   */
+  async createLeadForm(name) {
+    const creds = await this.getCredentials();
+    const pageId = creds.meta_page_id;
+    
+    if (!pageId) throw new Error('Meta Page ID not configured.');
+
+    const pageToken = await this.getPageAccessToken(creds);
+
+    const payload = {
+      name: name,
+      questions: JSON.stringify([
+        { 
+          type: 'CUSTOM',
+          label: 'Inquiry for (PCD Pharma or 3rd Party Manufacturing)?'
+        },
+        { type: 'FULL_NAME' },
+        { type: 'EMAIL' },
+        { type: 'PHONE' }
+      ]),
+      privacy_policy: JSON.stringify({
+        url: 'https://chemsroot.com',
+        link_text: 'Privacy Policy'
+      }),
+      follow_up_action_url: 'https://chemsroot.com',
+      access_token: pageToken
+    };
+
+    try {
+      const response = await axios.post(`${this.baseUrl}/${pageId}/leadgen_forms`, payload);
+      return response.data;
+    } catch (error) {
+      console.error('Meta Lead Form Creation Error:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Leads for a specific Lead Generation Form
+   */
+  async getFormLeads(formId) {
+    const creds = await this.getCredentials();
+    const pageToken = await this.getPageAccessToken(creds);
+
+    try {
+      const response = await axios.get(`${this.baseUrl}/${formId}/leads`, {
+        params: {
+          access_token: pageToken,
+          fields: 'created_time,id,field_data'
+        }
+      });
+      return response.data.data || [];
+    } catch (error) {
+      console.error('Meta Form Leads Error:', error.response?.data?.error?.message || error.message);
+      throw error;
+    }
+  }
+
   /**
    * Create a Campaign on Meta
    */
-  async createCampaign(name) {
+  async createCampaign(name, objective = 'OUTCOME_TRAFFIC') {
     const creds = await this.getCredentials();
     const adAccountId = creds.meta_ad_account_id;
     
     const payload = {
-      name: name,
-      objective: 'OUTCOME_AWARENESS',
+      name: `Campaign - ${name}`,
+      objective: objective,
       status: 'PAUSED',
-      special_ad_categories: [],
+      special_ad_categories: ['NONE'],
       is_adset_budget_sharing_enabled: false,
       access_token: creds.meta_access_token
     };
@@ -264,16 +366,19 @@ class MetaApi {
   /**
    * Create an Ad Set with targeting
    */
-  async createAdSet(campaignId, name, budget, targetingSpec = null) {
+  async createAdSet(campaignId, name, budget, targetingSpec = null, objective = 'OUTCOME_TRAFFIC') {
     const creds = await this.getCredentials();
     const adAccountId = creds.meta_ad_account_id;
+    const pageId = creds.meta_page_id;
+
+    const optimizationGoal = objective === 'OUTCOME_LEADS' ? 'LEAD_GENERATION' : 'LINK_CLICKS';
 
     const payload = {
       name: `AdSet - ${name}`,
       campaign_id: campaignId,
       daily_budget: Math.max(budget, 110) * 100, 
       billing_event: 'IMPRESSIONS',
-      optimization_goal: 'REACH',
+      optimization_goal: optimizationGoal,
       bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
       targeting: targetingSpec || {
         geo_locations: { countries: ['IN'] },
@@ -281,6 +386,11 @@ class MetaApi {
       status: 'PAUSED',
       access_token: creds.meta_access_token
     };
+
+    if (objective === 'OUTCOME_LEADS') {
+      payload.promoted_object = { page_id: pageId };
+      payload.destination_type = 'ON_AD';
+    }
 
     try {
       const response = await axios.post(`${this.baseUrl}/${adAccountId}/adsets`, payload);
@@ -294,10 +404,14 @@ class MetaApi {
   /**
    * Create the Ad Creative (The actual message + image)
    */
-  async createAdCreative(adName, headline, body, imageHash, description = '') {
+  async createAdCreative(adName, headline, body, imageHash, description = '', leadGenFormId = null) {
     const creds = await this.getCredentials();
     const adAccountId = creds.meta_ad_account_id;
     const pageId = creds.meta_page_id;
+
+    const callToAction = leadGenFormId 
+      ? { type: 'SIGN_UP', value: { lead_gen_form_id: leadGenFormId } }
+      : { type: 'LEARN_MORE' };
 
     const payload = {
       name: adName,
@@ -307,7 +421,7 @@ class MetaApi {
           image_hash: imageHash,
           link: "https://chemsroot.com",
           message: body,
-          call_to_action: { type: 'LEARN_MORE' },
+          call_to_action: callToAction,
           name: headline,
           description: description
         }
@@ -327,17 +441,21 @@ class MetaApi {
   /**
    * Create a Carousel Ad Creative
    */
-  async createCarouselCreative(adName, message, slides) {
+  async createCarouselCreative(adName, message, slides, leadGenFormId = null) {
     const creds = await this.getCredentials();
     const adAccountId = creds.meta_ad_account_id;
     const pageId = creds.meta_page_id;
+
+    const callToAction = leadGenFormId 
+      ? { type: 'SIGN_UP', value: { lead_gen_form_id: leadGenFormId } }
+      : { type: 'LEARN_MORE' };
 
     const child_attachments = slides.map(slide => ({
       link: "https://chemsroot.com",
       image_hash: slide.imageHash,
       name: slide.headline,
       description: slide.description || '',
-      call_to_action: { type: 'LEARN_MORE' }
+      call_to_action: callToAction
     }));
 
     const payload = {
@@ -345,8 +463,9 @@ class MetaApi {
       object_story_spec: {
         page_id: pageId,
         link_data: {
-          link: "https://chemsroot.com",
+          link: `https://facebook.com/${pageId}`,
           message: message,
+          call_to_action: callToAction,
           child_attachments: child_attachments
         }
       },
